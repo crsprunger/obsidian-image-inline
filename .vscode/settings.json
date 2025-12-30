@@ -8,5 +8,6 @@
         ".eslintignore": true,
         ".npmrc": true,
         "esbuild.config.mjs": true
-    }
+    },
+    "gitdoc.enabled": true
 }
