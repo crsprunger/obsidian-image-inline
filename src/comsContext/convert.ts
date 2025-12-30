@@ -118,52 +118,49 @@ async function handleImageResizing(
 	plugin: ImageInlinePlugin,
 	activeFile: TFile | null
 ): Promise<{ processedFile: Base64File; shouldSaveAsAttachment: boolean }> {
-	const sizeInKB = base64File.size / 1024;
 	let processedFile = base64File;
 	let shouldSaveAsAttachment = false;
 
-	if (plugin.settings.enableResizing) {
-		if (plugin.settings.resizeStrategy === "smaller") {
-			if (sizeInKB > plugin.settings.smallerThreshold) {
-				shouldSaveAsAttachment = true;
-			}
+	// Step 1: Apply resolution limits
+	if (plugin.settings.maxWidth > 0 || plugin.settings.maxHeight > 0) {
+		processedFile = await processedFile.resizeToMaxDimensions(
+			plugin.settings.maxWidth,
+			plugin.settings.maxHeight
+		);
+	}
+
+	// Step 2: Apply format conversion
+	if (plugin.settings.outputFormat !== 'auto') {
+		const quality = plugin.settings.outputFormat === 'jpeg' 
+			? plugin.settings.jpegQuality 
+			: plugin.settings.outputFormat === 'webp'
+				? plugin.settings.webpQuality
+				: 100;
+		processedFile = await processedFile.convertFormat(plugin.settings.outputFormat, quality);
+	} else {
+		// Auto-select: try WebP and JPEG, pick smallest
+		const webpFile = await processedFile.convertFormat('webp', plugin.settings.webpQuality);
+		const jpegFile = await processedFile.convertFormat('jpeg', plugin.settings.jpegQuality);
+		
+		if (webpFile.size <= jpegFile.size && webpFile.size <= processedFile.size) {
+			processedFile = webpFile;
+		} else if (jpegFile.size < processedFile.size) {
+			processedFile = jpegFile;
+		}
+	}
+
+	// Step 3: Check size limits and auto-compress if needed
+	const base64SizeKB = processedFile.base64Size / 1024;
+	if (plugin.settings.maxBase64SizeKB > 0 && base64SizeKB > plugin.settings.maxBase64SizeKB) {
+		if (plugin.settings.enableAutoCompress) {
+			const format = processedFile.mimeType.includes('webp') ? 'webp' 
+				: processedFile.mimeType.includes('jpeg') ? 'jpeg' : 'webp';
+			processedFile = await processedFile.compressToSize(
+				plugin.settings.maxBase64SizeKB,
+				format
+			);
 		} else {
-			// Larger strategy
-			if (
-				sizeInKB > plugin.settings.largerThreshold ||
-				plugin.settings.resizeSmallerFiles
-			) {
-				processedFile = await plugin.conversion.resize(
-					base64File,
-					plugin.settings.resizePercentage
-				);
-
-				if (plugin.settings.backupOriginalImage && activeFile) {
-					const timestamp = new Date()
-						.toISOString()
-						.replace(/[:.]/g, "-");
-					const backupFilename = `${base64File.filename.replace(
-						".png",
-						""
-					)}_original_${timestamp}.png`;
-
-					const targetPath =
-						await plugin.app.fileManager.getAvailablePathForAttachment(
-							backupFilename,
-							activeFile.path
-						);
-
-					const file = new File(
-						[base64File.buffer],
-						backupFilename,
-						{ type: "image/png" }
-					);
-					await plugin.app.vault.createBinary(
-						targetPath,
-						await file.arrayBuffer()
-					);
-				}
-			}
+			shouldSaveAsAttachment = true;
 		}
 	}
 
