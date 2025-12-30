@@ -473,41 +473,36 @@ async function fetchOnlineImage(url) {
   }
 }
 async function handleImageResizing(base64File, plugin, activeFile) {
-  const sizeInKB = base64File.size / 1024;
   let processedFile = base64File;
   let shouldSaveAsAttachment = false;
-  if (plugin.settings.enableResizing) {
-    if (plugin.settings.resizeStrategy === "smaller") {
-      if (sizeInKB > plugin.settings.smallerThreshold) {
-        shouldSaveAsAttachment = true;
-      }
+  if (plugin.settings.maxWidth > 0 || plugin.settings.maxHeight > 0) {
+    processedFile = await processedFile.resizeToMaxDimensions(
+      plugin.settings.maxWidth,
+      plugin.settings.maxHeight
+    );
+  }
+  if (plugin.settings.outputFormat !== "auto") {
+    const quality = plugin.settings.outputFormat === "jpeg" ? plugin.settings.jpegQuality : plugin.settings.outputFormat === "webp" ? plugin.settings.webpQuality : 100;
+    processedFile = await processedFile.convertFormat(plugin.settings.outputFormat, quality);
+  } else {
+    const webpFile = await processedFile.convertFormat("webp", plugin.settings.webpQuality);
+    const jpegFile = await processedFile.convertFormat("jpeg", plugin.settings.jpegQuality);
+    if (webpFile.size <= jpegFile.size && webpFile.size <= processedFile.size) {
+      processedFile = webpFile;
+    } else if (jpegFile.size < processedFile.size) {
+      processedFile = jpegFile;
+    }
+  }
+  const base64SizeKB = processedFile.base64Size / 1024;
+  if (plugin.settings.maxBase64SizeKB > 0 && base64SizeKB > plugin.settings.maxBase64SizeKB) {
+    if (plugin.settings.enableAutoCompress) {
+      const format = processedFile.mimeType.includes("webp") ? "webp" : processedFile.mimeType.includes("jpeg") ? "jpeg" : "webp";
+      processedFile = await processedFile.compressToSize(
+        plugin.settings.maxBase64SizeKB,
+        format
+      );
     } else {
-      if (sizeInKB > plugin.settings.largerThreshold || plugin.settings.resizeSmallerFiles) {
-        processedFile = await plugin.conversion.resize(
-          base64File,
-          plugin.settings.resizePercentage
-        );
-        if (plugin.settings.backupOriginalImage && activeFile) {
-          const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-          const backupFilename = `${base64File.filename.replace(
-            ".png",
-            ""
-          )}_original_${timestamp}.png`;
-          const targetPath = await plugin.app.fileManager.getAvailablePathForAttachment(
-            backupFilename,
-            activeFile.path
-          );
-          const file = new File(
-            [base64File.buffer],
-            backupFilename,
-            { type: "image/png" }
-          );
-          await plugin.app.vault.createBinary(
-            targetPath,
-            await file.arrayBuffer()
-          );
-        }
-      }
+      shouldSaveAsAttachment = true;
     }
   }
   return { processedFile, shouldSaveAsAttachment };
@@ -988,17 +983,6 @@ var DEFAULT_SETTINGS = {
   convertOnPaste: true,
   convertOnDrop: true,
   autoEscapeLink: true,
-  // Default to true
-  enableResizing: false,
-  resizeStrategy: "smaller",
-  smallerThreshold: 1e3,
-  // 1MB default
-  largerThreshold: 1e3,
-  // 1MB default
-  resizePercentage: 80,
-  backupOriginalImage: true,
-  resizeSmallerFiles: false,
-  // Default to false
   // Image format defaults
   outputFormat: "auto",
   jpegQuality: 85,
@@ -1103,36 +1087,6 @@ var ImageInlinePlugin = class extends import_obsidian6.Plugin {
             continue;
           }
         }
-        if (this.settings.enableResizing) {
-          const sizeInKB = base64File.size / 1024;
-          if (this.settings.resizeStrategy === "smaller") {
-            if (sizeInKB > this.settings.smallerThreshold) {
-              attachments.push(base64File);
-              continue;
-            }
-          } else {
-            if (sizeInKB > this.settings.largerThreshold) {
-              base64File = await this.conversion.resize(base64File, this.settings.resizePercentage);
-              if (this.settings.backupOriginalImage) {
-                const activeFile = this.app.workspace.getActiveFile();
-                if (activeFile) {
-                  const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-                  const ext = base64File.mimeType.split("/")[1] || "png";
-                  const backupFilename = `${base64File.filename.replace(/\.[^/.]+$/, "")}_original_${timestamp}.${ext}`;
-                  const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
-                    backupFilename,
-                    activeFile.path
-                  );
-                  const file = new File([base64File.buffer], backupFilename, { type: base64File.mimeType });
-                  await this.app.vault.createBinary(
-                    targetPath,
-                    await file.arrayBuffer()
-                  );
-                }
-              }
-            }
-          }
-        }
         processedFiles.push(base64File);
       }
       if (processedFiles.length > 0) {
@@ -1193,48 +1147,6 @@ var ImageInlineSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.autoEscapeLink = value;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h2", { text: "Image Resizing" });
-    new import_obsidian6.Setting(containerEl).setName("Enable resizing").setDesc("Enable image resizing features").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableResizing).onChange(async (value) => {
-      this.plugin.settings.enableResizing = value;
-      await this.plugin.saveSettings();
-      this.display();
-    }));
-    if (this.plugin.settings.enableResizing) {
-      new import_obsidian6.Setting(containerEl).setName("Resizing strategy").setDesc("Choose how to handle image resizing").addDropdown((dropdown) => dropdown.addOption("smaller", "Convert small images to base64").addOption("larger", "Resize large images").setValue(this.plugin.settings.resizeStrategy).onChange(async (value) => {
-        this.plugin.settings.resizeStrategy = value;
-        await this.plugin.saveSettings();
-        this.display();
-      }));
-      if (this.plugin.settings.resizeStrategy === "smaller") {
-        new import_obsidian6.Setting(containerEl).setName("Size threshold").setDesc("Images smaller than this size (in KB) will be converted to base64").addText((text) => text.setValue(this.plugin.settings.smallerThreshold.toString()).onChange(async (value) => {
-          const num = Number(value);
-          if (!isNaN(num)) {
-            this.plugin.settings.smallerThreshold = num;
-            await this.plugin.saveSettings();
-          }
-        }));
-      } else {
-        new import_obsidian6.Setting(containerEl).setName("Size threshold").setDesc("Images larger than this size (in KB) will be resized").addText((text) => text.setValue(this.plugin.settings.largerThreshold.toString()).onChange(async (value) => {
-          const num = Number(value);
-          if (!isNaN(num)) {
-            this.plugin.settings.largerThreshold = num;
-            await this.plugin.saveSettings();
-          }
-        }));
-        new import_obsidian6.Setting(containerEl).setName("Resize percentage").setDesc("Percentage to resize images to (1-100)").addSlider((slider) => slider.setLimits(1, 100, 1).setValue(this.plugin.settings.resizePercentage).setDynamicTooltip().onChange(async (value) => {
-          this.plugin.settings.resizePercentage = value;
-          await this.plugin.saveSettings();
-        }));
-        new import_obsidian6.Setting(containerEl).setName("Backup original images").setDesc("Save original images to media folder when resizing").addToggle((toggle) => toggle.setValue(this.plugin.settings.backupOriginalImage).onChange(async (value) => {
-          this.plugin.settings.backupOriginalImage = value;
-          await this.plugin.saveSettings();
-        }));
-        new import_obsidian6.Setting(containerEl).setName("Resize smaller files").setDesc("Also resize files smaller than the threshold when using larger strategy").addToggle((toggle) => toggle.setValue(this.plugin.settings.resizeSmallerFiles).onChange(async (value) => {
-          this.plugin.settings.resizeSmallerFiles = value;
-          await this.plugin.saveSettings();
-        }));
-      }
-    }
     containerEl.createEl("h2", { text: "Image Optimization" });
     new import_obsidian6.Setting(containerEl).setName("Output format").setDesc("Choose the output image format (auto selects smallest)").addDropdown((dropdown) => dropdown.addOption("auto", "Auto (smallest size)").addOption("webp", "WebP").addOption("jpeg", "JPEG").addOption("png", "PNG").setValue(this.plugin.settings.outputFormat).onChange(async (value) => {
       this.plugin.settings.outputFormat = value;
