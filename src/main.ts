@@ -6,7 +6,7 @@ import { registerConvertImage } from './comsContext/convert';
 import { registerConvertCommand } from './commands/selectAndConvert';
 import { registerExportCommand } from './commands/selectAndExport';
 import { registerCursorEscape } from './coms/cursorEscape';
-// Remember to rename these classes and interfaces!
+import { referenceLinksManager } from './utils/referenceLinks';
 
 export interface ImageInlineSettings {
 	// General settings
@@ -24,6 +24,23 @@ export interface ImageInlineSettings {
 	resizePercentage: number;
 	backupOriginalImage: boolean;
 	resizeSmallerFiles: boolean; // New option for larger strategy
+
+	// Image Format Settings
+	outputFormat: 'auto' | 'webp' | 'jpeg' | 'png';
+	jpegQuality: number;  // 1-100, default 85
+	webpQuality: number;  // 1-100, default 80
+
+	// Resolution Limits
+	maxWidth: number;     // Maximum width in pixels (0 = no limit)
+	maxHeight: number;    // Maximum height in pixels (0 = no limit)
+
+	// Size Limits
+	maxBase64SizeKB: number;  // Maximum base64 string size in KB (0 = no limit)
+	enableAutoCompress: boolean;  // Auto-compress if exceeds limit
+
+	// Link Style
+	useReferenceLinks: boolean;  // Use reference-style markdown links
+	referenceIdStyle: 'filename' | 'timestamp' | 'counter';
 }
 
 const DEFAULT_SETTINGS: ImageInlineSettings = {
@@ -36,7 +53,20 @@ const DEFAULT_SETTINGS: ImageInlineSettings = {
 	largerThreshold: 1000, // 1MB default
 	resizePercentage: 80,
 	backupOriginalImage: true,
-	resizeSmallerFiles: false // Default to false
+	resizeSmallerFiles: false, // Default to false
+	// Image format defaults
+	outputFormat: 'auto',
+	jpegQuality: 85,
+	webpQuality: 80,
+	// Resolution limits (0 = no limit)
+	maxWidth: 1920,
+	maxHeight: 0,
+	// Size limits
+	maxBase64SizeKB: 500,
+	enableAutoCompress: true,
+	// Link style
+	useReferenceLinks: false,
+	referenceIdStyle: 'filename'
 }
 
 export default class ImageInlinePlugin extends Plugin {
@@ -129,61 +159,117 @@ export default class ImageInlinePlugin extends Plugin {
 
 	async handleImages(base64Files: Base64File[], editor: Editor) {
 		try {
-			if (!this.settings.enableResizing) {
-				// If resizing is disabled, convert all to base64
-				const markdown = base64Files.map(file => file.to64Link()).join('\n');
-				editor.replaceSelection(markdown);
-				return;
-			}
-
 			const processedFiles: Base64File[] = [];
 			const attachments: Base64File[] = [];
 
-			for (const base64File of base64Files) {
-				const sizeInKB = base64File.size / 1024;
-				
-				if (this.settings.resizeStrategy === 'smaller') {
-					// Smaller strategy: convert small files to base64, save large ones as attachments
-					if (sizeInKB <= this.settings.smallerThreshold) {
-						processedFiles.push(base64File);
-					} else {
-						attachments.push(base64File);
-					}
+			for (let base64File of base64Files) {
+				// Step 1: Apply resolution limits
+				if (this.settings.maxWidth > 0 || this.settings.maxHeight > 0) {
+					base64File = await base64File.resizeToMaxDimensions(
+						this.settings.maxWidth,
+						this.settings.maxHeight
+					);
+				}
+
+				// Step 2: Apply format conversion
+				if (this.settings.outputFormat !== 'auto') {
+					const quality = this.settings.outputFormat === 'jpeg' 
+						? this.settings.jpegQuality 
+						: this.settings.outputFormat === 'webp'
+							? this.settings.webpQuality
+							: 100;
+					base64File = await base64File.convertFormat(this.settings.outputFormat, quality);
 				} else {
-					// Larger strategy: resize large files, convert small ones to base64
-					if (sizeInKB > this.settings.largerThreshold) {
-						const resizedFile = await this.conversion.resize(base64File, this.settings.resizePercentage);
-						processedFiles.push(resizedFile);
-						
-						if (this.settings.backupOriginalImage) {
-							const activeFile = this.app.workspace.getActiveFile();
-							if (activeFile) {
-								const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-								const backupFilename = `${base64File.filename.replace('.png', '')}_original_${timestamp}.png`;
-								
-								const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
-									backupFilename,
-									activeFile.path
-								);
-								
-								const file = new File([base64File.buffer], backupFilename, { type: 'image/png' });
-								await this.app.vault.createBinary(
-									targetPath,
-									await file.arrayBuffer()
-								) as TFile;
-							}
-						}
+					// Auto-select: try WebP first for best compression
+					const webpFile = await base64File.convertFormat('webp', this.settings.webpQuality);
+					const jpegFile = await base64File.convertFormat('jpeg', this.settings.jpegQuality);
+					
+					// Choose smallest
+					if (webpFile.size <= jpegFile.size && webpFile.size <= base64File.size) {
+						base64File = webpFile;
+					} else if (jpegFile.size < base64File.size) {
+						base64File = jpegFile;
+					}
+					// else keep original format
+				}
+
+				// Step 3: Check size limits and auto-compress if needed
+				const base64SizeKB = base64File.base64Size / 1024;
+				if (this.settings.maxBase64SizeKB > 0 && base64SizeKB > this.settings.maxBase64SizeKB) {
+					if (this.settings.enableAutoCompress) {
+						const format = base64File.mimeType.includes('webp') ? 'webp' 
+							: base64File.mimeType.includes('jpeg') ? 'jpeg' : 'webp';
+						base64File = await base64File.compressToSize(
+							this.settings.maxBase64SizeKB,
+							format
+						);
 					} else {
-						// Small files are directly converted to base64
-						processedFiles.push(base64File);
+						// Save as attachment if auto-compress is disabled
+						attachments.push(base64File);
+						continue;
 					}
 				}
+
+				// Step 4: Apply legacy resizing strategy if enabled
+				if (this.settings.enableResizing) {
+					const sizeInKB = base64File.size / 1024;
+					
+					if (this.settings.resizeStrategy === 'smaller') {
+						if (sizeInKB > this.settings.smallerThreshold) {
+							attachments.push(base64File);
+							continue;
+						}
+					} else {
+						if (sizeInKB > this.settings.largerThreshold) {
+							base64File = await this.conversion.resize(base64File, this.settings.resizePercentage);
+							
+							if (this.settings.backupOriginalImage) {
+								const activeFile = this.app.workspace.getActiveFile();
+								if (activeFile) {
+									const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+									const ext = base64File.mimeType.split('/')[1] || 'png';
+									const backupFilename = `${base64File.filename.replace(/\.[^/.]+$/, '')}_original_${timestamp}.${ext}`;
+									
+									const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
+										backupFilename,
+										activeFile.path
+									);
+									
+									const file = new File([base64File.buffer], backupFilename, { type: base64File.mimeType });
+									await this.app.vault.createBinary(
+										targetPath,
+										await file.arrayBuffer()
+									) as TFile;
+								}
+							}
+						}
+					}
+				}
+
+				processedFiles.push(base64File);
 			}
 
-			// Insert all processed files as base64
+			// Insert processed files
 			if (processedFiles.length > 0) {
-				const markdown = processedFiles.map(file => file.to64Link()).join('\n');
-				editor.replaceSelection(markdown);
+				if (this.settings.useReferenceLinks) {
+					// Use reference-style links
+					const { inlineRefs, definitions } = referenceLinksManager.createMultipleReferenceLinks(
+						processedFiles,
+						this.settings.referenceIdStyle
+					);
+					
+					// Insert inline references at cursor
+					editor.replaceSelection(inlineRefs.join('\n'));
+					
+					// Insert definitions at end of document
+					for (const def of definitions) {
+						referenceLinksManager.insertDefinition(editor, def);
+					}
+				} else {
+					// Use inline base64 links
+					const markdown = processedFiles.map(file => file.to64Link()).join('\n');
+					editor.replaceSelection(markdown);
+				}
 			}
 
 			// Handle attachments
@@ -192,7 +278,7 @@ export default class ImageInlinePlugin extends Plugin {
 				for (const attachment of attachments) {
 					const activeFile = this.app.workspace.getActiveFile();
 					if (activeFile) {
-						const file = new File([attachment.buffer], attachment.filename, { type: 'image/png' });
+						const file = new File([attachment.buffer], attachment.filename, { type: attachment.mimeType });
 						const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
 							attachment.filename,
 							activeFile.path
@@ -358,6 +444,139 @@ class ImageInlineSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}));
 			}
+		}
+
+		// Image Optimization Section
+		containerEl.createEl('h2', { text: 'Image Optimization' });
+
+		new Setting(containerEl)
+			.setName('Output format')
+			.setDesc('Choose the output image format (auto selects smallest)')
+			.addDropdown(dropdown => dropdown
+				.addOption('auto', 'Auto (smallest size)')
+				.addOption('webp', 'WebP')
+				.addOption('jpeg', 'JPEG')
+				.addOption('png', 'PNG')
+				.setValue(this.plugin.settings.outputFormat)
+				.onChange(async (value: 'auto' | 'webp' | 'jpeg' | 'png') => {
+					this.plugin.settings.outputFormat = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		if (this.plugin.settings.outputFormat === 'jpeg' || this.plugin.settings.outputFormat === 'auto') {
+			new Setting(containerEl)
+				.setName('JPEG quality')
+				.setDesc('Quality for JPEG encoding (1-100)')
+				.addSlider(slider => slider
+					.setLimits(1, 100, 1)
+					.setValue(this.plugin.settings.jpegQuality)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.jpegQuality = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+
+		if (this.plugin.settings.outputFormat === 'webp' || this.plugin.settings.outputFormat === 'auto') {
+			new Setting(containerEl)
+				.setName('WebP quality')
+				.setDesc('Quality for WebP encoding (1-100)')
+				.addSlider(slider => slider
+					.setLimits(1, 100, 1)
+					.setValue(this.plugin.settings.webpQuality)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.webpQuality = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+
+		// Resolution Limits Section
+		containerEl.createEl('h2', { text: 'Resolution Limits' });
+
+		new Setting(containerEl)
+			.setName('Maximum width')
+			.setDesc('Maximum image width in pixels (0 = no limit)')
+			.addText(text => text
+				.setValue(this.plugin.settings.maxWidth.toString())
+				.setPlaceholder('1920')
+				.onChange(async (value) => {
+					const num = Number(value);
+					if (!isNaN(num) && num >= 0) {
+						this.plugin.settings.maxWidth = num;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Maximum height')
+			.setDesc('Maximum image height in pixels (0 = no limit)')
+			.addText(text => text
+				.setValue(this.plugin.settings.maxHeight.toString())
+				.setPlaceholder('0')
+				.onChange(async (value) => {
+					const num = Number(value);
+					if (!isNaN(num) && num >= 0) {
+						this.plugin.settings.maxHeight = num;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		// Size Limits Section
+		containerEl.createEl('h2', { text: 'Size Limits' });
+
+		new Setting(containerEl)
+			.setName('Maximum base64 size (KB)')
+			.setDesc('Maximum size of base64 string in KB (0 = no limit)')
+			.addText(text => text
+				.setValue(this.plugin.settings.maxBase64SizeKB.toString())
+				.setPlaceholder('500')
+				.onChange(async (value) => {
+					const num = Number(value);
+					if (!isNaN(num) && num >= 0) {
+						this.plugin.settings.maxBase64SizeKB = num;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Auto-compress')
+			.setDesc('Automatically compress images that exceed the size limit')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableAutoCompress)
+				.onChange(async (value) => {
+					this.plugin.settings.enableAutoCompress = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Link Style Section
+		containerEl.createEl('h2', { text: 'Link Style' });
+
+		new Setting(containerEl)
+			.setName('Use reference links')
+			.setDesc('Use reference-style markdown links (data at end of document)')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useReferenceLinks)
+				.onChange(async (value) => {
+					this.plugin.settings.useReferenceLinks = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		if (this.plugin.settings.useReferenceLinks) {
+			new Setting(containerEl)
+				.setName('Reference ID style')
+				.setDesc('How to generate reference IDs')
+				.addDropdown(dropdown => dropdown
+					.addOption('filename', 'Based on filename')
+					.addOption('timestamp', 'Based on timestamp')
+					.addOption('counter', 'Incrementing counter')
+					.setValue(this.plugin.settings.referenceIdStyle)
+					.onChange(async (value: 'filename' | 'timestamp' | 'counter') => {
+						this.plugin.settings.referenceIdStyle = value;
+						await this.plugin.saveSettings();
+					}));
 		}
 	}
 }

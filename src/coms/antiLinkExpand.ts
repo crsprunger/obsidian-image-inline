@@ -31,8 +31,8 @@ export const linkDecorations = ViewPlugin.fromClass(class {
         const decorations: Range<Decoration>[] = [];
         const text = view.state.doc.toString(); // Get the entire document content
 
-        // Capture the entire data URL part
-        const regex = /data:image\/[^;]+;base64,[^)]+/g;
+        // Capture the entire data URL part (works for both inline and reference-style links)
+        const regex = /data:image\/[^;]+;base64,[^\s)\]]+/g;
         let match;
         
         while ((match = regex.exec(text)) !== null) {
