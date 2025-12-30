@@ -12,17 +12,6 @@ export interface ImageInlineSettings {
 	convertOnPaste: boolean;
 	convertOnDrop: boolean;
 	autoEscapeLink: boolean; 
-	
-	// Resizing settings
-	enableResizing: boolean;
-	resizeStrategy: 'smaller' | 'larger';
-	// For smaller strategy
-	smallerThreshold: number; // in KB
-	// For larger strategy
-	largerThreshold: number; // in KB
-	resizePercentage: number;
-	backupOriginalImage: boolean;
-	resizeSmallerFiles: boolean; // New option for larger strategy
 
 	// Image Format Settings
 	outputFormat: 'auto' | 'webp' | 'jpeg' | 'png';
@@ -41,14 +30,7 @@ export interface ImageInlineSettings {
 const DEFAULT_SETTINGS: ImageInlineSettings = {
 	convertOnPaste: true,
 	convertOnDrop: true,
-	autoEscapeLink: true, // Default to true
-	enableResizing: false,
-	resizeStrategy: 'smaller',
-	smallerThreshold: 1000, // 1MB default
-	largerThreshold: 1000, // 1MB default
-	resizePercentage: 80,
-	backupOriginalImage: true,
-	resizeSmallerFiles: false, // Default to false
+	autoEscapeLink: true,
 	// Image format defaults
 	outputFormat: 'auto',
 	jpegQuality: 85,
@@ -202,42 +184,6 @@ export default class ImageInlinePlugin extends Plugin {
 					}
 				}
 
-				// Step 4: Apply legacy resizing strategy if enabled
-				if (this.settings.enableResizing) {
-					const sizeInKB = base64File.size / 1024;
-					
-					if (this.settings.resizeStrategy === 'smaller') {
-						if (sizeInKB > this.settings.smallerThreshold) {
-							attachments.push(base64File);
-							continue;
-						}
-					} else {
-						if (sizeInKB > this.settings.largerThreshold) {
-							base64File = await this.conversion.resize(base64File, this.settings.resizePercentage);
-							
-							if (this.settings.backupOriginalImage) {
-								const activeFile = this.app.workspace.getActiveFile();
-								if (activeFile) {
-									const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-									const ext = base64File.mimeType.split('/')[1] || 'png';
-									const backupFilename = `${base64File.filename.replace(/\.[^/.]+$/, '')}_original_${timestamp}.${ext}`;
-									
-									const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
-										backupFilename,
-										activeFile.path
-									);
-									
-									const file = new File([base64File.buffer], backupFilename, { type: base64File.mimeType });
-									await this.app.vault.createBinary(
-										targetPath,
-										await file.arrayBuffer()
-									) as TFile;
-								}
-							}
-						}
-					}
-				}
-
 				processedFiles.push(base64File);
 			}
 
@@ -331,95 +277,6 @@ class ImageInlineSettingTab extends PluginSettingTab {
 					this.plugin.settings.autoEscapeLink = value;
 					await this.plugin.saveSettings();
 				}));
-
-		// Resizing Settings Section
-		containerEl.createEl('h2', { text: 'Image Resizing' });
-
-		new Setting(containerEl)
-			.setName('Enable resizing')
-			.setDesc('Enable image resizing features')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.enableResizing)
-				.onChange(async (value) => {
-					this.plugin.settings.enableResizing = value;
-					await this.plugin.saveSettings();
-					this.display(); // Refresh to show/hide resizing options
-				}));
-
-		if (this.plugin.settings.enableResizing) {
-			new Setting(containerEl)
-				.setName('Resizing strategy')
-				.setDesc('Choose how to handle image resizing')
-				.addDropdown(dropdown => dropdown
-					.addOption('smaller', 'Convert small images to base64')
-					.addOption('larger', 'Resize large images')
-					.setValue(this.plugin.settings.resizeStrategy)
-					.onChange(async (value: 'smaller' | 'larger') => {
-						this.plugin.settings.resizeStrategy = value;
-						await this.plugin.saveSettings();
-						this.display(); // Refresh to show/hide strategy-specific settings
-					}));
-
-			if (this.plugin.settings.resizeStrategy === 'smaller') {
-				new Setting(containerEl)
-					.setName('Size threshold')
-					.setDesc('Images smaller than this size (in KB) will be converted to base64')
-					.addText(text => text
-						.setValue(this.plugin.settings.smallerThreshold.toString())
-						.onChange(async (value) => {
-							const num = Number(value);
-							if (!isNaN(num)) {
-								this.plugin.settings.smallerThreshold = num;
-								await this.plugin.saveSettings();
-							}
-						}));
-			} else {
-				new Setting(containerEl)
-					.setName('Size threshold')
-					.setDesc('Images larger than this size (in KB) will be resized')
-					.addText(text => text
-						.setValue(this.plugin.settings.largerThreshold.toString())
-						.onChange(async (value) => {
-							const num = Number(value);
-							if (!isNaN(num)) {
-								this.plugin.settings.largerThreshold = num;
-								await this.plugin.saveSettings();
-							}
-						}));
-
-				new Setting(containerEl)
-					.setName('Resize percentage')
-					.setDesc('Percentage to resize images to (1-100)')
-					.addSlider(slider => slider
-						.setLimits(1, 100, 1)
-						.setValue(this.plugin.settings.resizePercentage)
-						.setDynamicTooltip()
-						.onChange(async (value) => {
-							this.plugin.settings.resizePercentage = value;
-							await this.plugin.saveSettings();
-						}));
-
-				new Setting(containerEl)
-					.setName('Backup original images')
-					.setDesc('Save original images to media folder when resizing')
-					.addToggle(toggle => toggle
-						.setValue(this.plugin.settings.backupOriginalImage)
-						.onChange(async (value) => {
-							this.plugin.settings.backupOriginalImage = value;
-							await this.plugin.saveSettings();
-						}));
-
-				new Setting(containerEl)
-					.setName('Resize smaller files')
-					.setDesc('Also resize files smaller than the threshold when using larger strategy')
-					.addToggle(toggle => toggle
-						.setValue(this.plugin.settings.resizeSmallerFiles)
-						.onChange(async (value) => {
-							this.plugin.settings.resizeSmallerFiles = value;
-							await this.plugin.saveSettings();
-						}));
-			}
-		}
 
 		// Image Optimization Section
 		containerEl.createEl('h2', { text: 'Image Optimization' });
