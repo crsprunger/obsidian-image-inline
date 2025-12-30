@@ -6,7 +6,6 @@ import { registerConvertImage } from './comsContext/convert';
 import { registerConvertCommand } from './commands/selectAndConvert';
 import { registerExportCommand } from './commands/selectAndExport';
 import { registerCursorEscape } from './coms/cursorEscape';
-import { referenceLinksManager } from './utils/referenceLinks';
 
 export interface ImageInlineSettings {
 	// General settings
@@ -37,10 +36,6 @@ export interface ImageInlineSettings {
 	// Size Limits
 	maxBase64SizeKB: number;  // Maximum base64 string size in KB (0 = no limit)
 	enableAutoCompress: boolean;  // Auto-compress if exceeds limit
-
-	// Link Style
-	useReferenceLinks: boolean;  // Use reference-style markdown links
-	referenceIdStyle: 'filename' | 'timestamp' | 'counter';
 }
 
 const DEFAULT_SETTINGS: ImageInlineSettings = {
@@ -63,10 +58,7 @@ const DEFAULT_SETTINGS: ImageInlineSettings = {
 	maxHeight: 0,
 	// Size limits
 	maxBase64SizeKB: 500,
-	enableAutoCompress: true,
-	// Link style
-	useReferenceLinks: false,
-	referenceIdStyle: 'filename'
+	enableAutoCompress: true
 }
 
 export default class ImageInlinePlugin extends Plugin {
@@ -249,27 +241,10 @@ export default class ImageInlinePlugin extends Plugin {
 				processedFiles.push(base64File);
 			}
 
-			// Insert processed files
+			// Insert processed files as inline base64 links
 			if (processedFiles.length > 0) {
-				if (this.settings.useReferenceLinks) {
-					// Use reference-style links
-					const { inlineRefs, definitions } = referenceLinksManager.createMultipleReferenceLinks(
-						processedFiles,
-						this.settings.referenceIdStyle
-					);
-					
-					// Insert inline references at cursor
-					editor.replaceSelection(inlineRefs.join('\n'));
-					
-					// Insert definitions at end of document
-					for (const def of definitions) {
-						referenceLinksManager.insertDefinition(editor, def);
-					}
-				} else {
-					// Use inline base64 links
-					const markdown = processedFiles.map(file => file.to64Link()).join('\n');
-					editor.replaceSelection(markdown);
-				}
+				const markdown = processedFiles.map(file => file.to64Link()).join('\n');
+				editor.replaceSelection(markdown);
 			}
 
 			// Handle attachments
@@ -549,35 +524,6 @@ class ImageInlineSettingTab extends PluginSettingTab {
 					this.plugin.settings.enableAutoCompress = value;
 					await this.plugin.saveSettings();
 				}));
-
-		// Link Style Section
-		containerEl.createEl('h2', { text: 'Link Style' });
-
-		new Setting(containerEl)
-			.setName('Use reference links')
-			.setDesc('Use reference-style markdown links (data at end of document)')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.useReferenceLinks)
-				.onChange(async (value) => {
-					this.plugin.settings.useReferenceLinks = value;
-					await this.plugin.saveSettings();
-					this.display();
-				}));
-
-		if (this.plugin.settings.useReferenceLinks) {
-			new Setting(containerEl)
-				.setName('Reference ID style')
-				.setDesc('How to generate reference IDs')
-				.addDropdown(dropdown => dropdown
-					.addOption('filename', 'Based on filename')
-					.addOption('timestamp', 'Based on timestamp')
-					.addOption('counter', 'Incrementing counter')
-					.setValue(this.plugin.settings.referenceIdStyle)
-					.onChange(async (value: 'filename' | 'timestamp' | 'counter') => {
-						this.plugin.settings.referenceIdStyle = value;
-						await this.plugin.saveSettings();
-					}));
-		}
 	}
 }
 
