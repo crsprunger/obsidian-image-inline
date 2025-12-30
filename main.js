@@ -983,106 +983,6 @@ function checkCursorPosition(editor) {
   }
 }
 
-// src/utils/referenceLinks.ts
-var ReferenceLinksManager = class {
-  constructor() {
-    this.counter = 0;
-  }
-  /**
-   * Generate unique reference ID based on style preference
-   */
-  generateRefId(filename, style) {
-    switch (style) {
-      case "filename":
-        const baseName = filename.replace(/\.[^/.]+$/, "");
-        const sanitized = baseName.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-        return `img_${sanitized}`;
-      case "timestamp":
-        return `img_${Date.now()}`;
-      case "counter":
-        this.counter++;
-        return `img_${this.counter}`;
-      default:
-        return `img_${Date.now()}`;
-    }
-  }
-  /**
-   * Create inline reference and definition for a base64 image
-   */
-  createReferenceLink(base64File, style) {
-    const refId = this.generateRefId(base64File.filename, style);
-    const base64Data = base64File.to64Data();
-    return {
-      inlineRef: `![${base64File.filename}][${refId}]`,
-      definition: `[${refId}]: ${base64Data}`,
-      refId
-    };
-  }
-  /**
-   * Parse existing reference definitions from document content
-   */
-  parseExistingReferences(content) {
-    const references = /* @__PURE__ */ new Map();
-    const regex = /^\[([^\]]+)\]:\s*(data:image\/[^\s]+)/gm;
-    let match;
-    while ((match = regex.exec(content)) !== null) {
-      references.set(match[1], match[2]);
-    }
-    return references;
-  }
-  /**
-   * Find the position to insert reference definitions
-   * Returns the line number where definitions should be inserted
-   */
-  findDefinitionInsertPosition(editor) {
-    const content = editor.getValue();
-    const lines = content.split("\n");
-    let insertLine = lines.length;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line === "") continue;
-      if (line.match(/^\[[^\]]+\]:\s*data:image\//)) {
-        continue;
-      } else {
-        insertLine = i + 1;
-        break;
-      }
-    }
-    return insertLine;
-  }
-  /**
-   * Insert definition at the end of document (before any existing definitions)
-   */
-  insertDefinition(editor, definition) {
-    var _a, _b;
-    const insertLine = this.findDefinitionInsertPosition(editor);
-    const content = editor.getValue();
-    const lines = content.split("\n");
-    let prefix = "";
-    if (insertLine > 0 && ((_a = lines[insertLine - 1]) == null ? void 0 : _a.trim()) !== "") {
-      prefix = "\n\n";
-    } else if (insertLine > 0 && ((_b = lines[insertLine - 1]) == null ? void 0 : _b.trim()) === "") {
-      prefix = "\n";
-    }
-    const pos = editor.posToOffset({ line: insertLine, ch: 0 });
-    editor.replaceRange(prefix + definition + "\n", editor.offsetToPos(pos));
-  }
-  /**
-   * Create multiple reference links and their definitions
-   */
-  createMultipleReferenceLinks(base64Files, style) {
-    const inlineRefs = [];
-    const definitions = [];
-    for (const file of base64Files) {
-      const ref = this.createReferenceLink(file, style);
-      inlineRefs.push(ref.inlineRef);
-      definitions.push(ref.definition);
-    }
-    return { inlineRefs, definitions };
-  }
-};
-var referenceLinksManager = new ReferenceLinksManager();
-
 // src/main.ts
 var DEFAULT_SETTINGS = {
   convertOnPaste: true,
@@ -1108,10 +1008,7 @@ var DEFAULT_SETTINGS = {
   maxHeight: 0,
   // Size limits
   maxBase64SizeKB: 500,
-  enableAutoCompress: true,
-  // Link style
-  useReferenceLinks: false,
-  referenceIdStyle: "filename"
+  enableAutoCompress: true
 };
 var ImageInlinePlugin = class extends import_obsidian6.Plugin {
   async onload() {
@@ -1239,19 +1136,8 @@ var ImageInlinePlugin = class extends import_obsidian6.Plugin {
         processedFiles.push(base64File);
       }
       if (processedFiles.length > 0) {
-        if (this.settings.useReferenceLinks) {
-          const { inlineRefs, definitions } = referenceLinksManager.createMultipleReferenceLinks(
-            processedFiles,
-            this.settings.referenceIdStyle
-          );
-          editor.replaceSelection(inlineRefs.join("\n"));
-          for (const def of definitions) {
-            referenceLinksManager.insertDefinition(editor, def);
-          }
-        } else {
-          const markdown = processedFiles.map((file) => file.to64Link()).join("\n");
-          editor.replaceSelection(markdown);
-        }
+        const markdown = processedFiles.map((file) => file.to64Link()).join("\n");
+        editor.replaceSelection(markdown);
       }
       if (attachments.length > 0) {
         new import_obsidian6.Notice(`${attachments.length} image(s) will be saved as attachments`);
@@ -1394,17 +1280,5 @@ var ImageInlineSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.enableAutoCompress = value;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h2", { text: "Link Style" });
-    new import_obsidian6.Setting(containerEl).setName("Use reference links").setDesc("Use reference-style markdown links (data at end of document)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useReferenceLinks).onChange(async (value) => {
-      this.plugin.settings.useReferenceLinks = value;
-      await this.plugin.saveSettings();
-      this.display();
-    }));
-    if (this.plugin.settings.useReferenceLinks) {
-      new import_obsidian6.Setting(containerEl).setName("Reference ID style").setDesc("How to generate reference IDs").addDropdown((dropdown) => dropdown.addOption("filename", "Based on filename").addOption("timestamp", "Based on timestamp").addOption("counter", "Incrementing counter").setValue(this.plugin.settings.referenceIdStyle).onChange(async (value) => {
-        this.plugin.settings.referenceIdStyle = value;
-        await this.plugin.saveSettings();
-      }));
-    }
   }
 };
