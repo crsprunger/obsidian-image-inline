@@ -69,6 +69,9 @@ export default class ImageInlinePlugin extends Plugin {
 		//  command to select and export images
 		await registerExportCommand(this);
 
+		// Command to inline images from a folder
+		registerInlineFolderImagesCommand(this);
+
 		// Register paste event
 		this.registerEvent(
 			this.app.workspace.on('editor-paste', async (evt: ClipboardEvent, editor: Editor) => {
