@@ -6,6 +6,7 @@ import { registerConvertImage } from './comsContext/convert';
 import { registerConvertCommand } from './commands/selectAndConvert';
 import { registerExportCommand } from './commands/selectAndExport';
 import { registerCursorEscape } from './coms/cursorEscape';
+import { registerInlineFolderImagesCommand } from './commands/inlineFolderImages';
 
 export interface ImageInlineSettings {
 	// General settings

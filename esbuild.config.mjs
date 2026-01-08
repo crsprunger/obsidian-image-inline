@@ -1,6 +1,8 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
+import { copyFileSync } from "fs";
+import { dirname } from "path";
 
 const banner = `
 /*
@@ -10,6 +12,7 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+const outfile = "/Users/csprunger/Documents/obsidian/machine-learning/.obsidian/plugins/image-inline-v2/main.js";
 
 const context = await esbuild.context({
     banner: {
@@ -39,14 +42,23 @@ const context = await esbuild.context({
     logLevel: "info",
     sourcemap: prod ? false : "inline",
     treeShaking: true,
-    outfile: "main.js",  // Updated path
+    outfile: outfile,
 });
+
+// Copy manifest.json to output directory
+function copyManifest() {
+    const outDir = dirname(outfile);
+    copyFileSync("manifest.json", `${outDir}/manifest.json`);
+    console.log("Copied manifest.json to output directory.");
+}
 
 if (prod) {
     await context.rebuild();
+    copyManifest();
     console.log("Production build completed.");
     process.exit(0);
 } else {
     await context.watch();
+    copyManifest();
     console.log('Watching for changes...');
 }
